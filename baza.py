@@ -2,7 +2,6 @@ import streamlit as st
 from supabase import create_client, Client
 
 # 1. KONFIGURACJA POŁĄCZENIA
-# Upewnij się, że Twoje Secrets w Streamlit Cloud mają klucze: SUPABASE_URL i SUPABASE_KEY
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
@@ -14,7 +13,7 @@ except Exception as e:
 # Konfiguracja strony
 st.set_page_config(page_title="System Magazynowy", layout="wide")
 
-# --- FUNKCJE POMOCNICZE (Pobieranie danych) ---
+# --- FUNKCJE POMOCNICZE ---
 def get_categories():
     try:
         response = supabase.table("kategorie").select("id, nazwa").execute()
@@ -30,9 +29,25 @@ page = st.sidebar.radio("Wybierz sekcję:", ["📦 Magazyn", "📂 Kategorie"])
 if page == "📂 Kategorie":
     st.title("📂 Zarządzanie Kategoriami")
     
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
+    # Podział na zakładki wewnątrz Kategorii
+    tab_kat_lista, tab_kat_dodaj, tab_kat_usun = st.tabs([
+        "📋 Lista kategorii", 
+        "➕ Dodaj kategorię", 
+        "🗑️ Usuń kategorię"
+    ])
+
+    with tab_kat_lista:
+        st.header("📋 Zdefiniowane kategorie")
+        try:
+            res_kat = supabase.table("kategorie").select("id, nazwa, opis").execute()
+            if res_kat.data:
+                st.dataframe(res_kat.data, use_container_width=True)
+            else:
+                st.info("Brak zdefiniowanych kategorii.")
+        except Exception as e:
+            st.error(f"Błąd pobierania: {e}")
+
+    with tab_kat_dodaj:
         st.header("➕ Dodaj nową kategorię")
         with st.form("category_form", clear_on_submit=True):
             kat_nazwa = st.text_input("Nazwa kategorii (np. Elektronika)")
@@ -51,33 +66,44 @@ if page == "📂 Kategorie":
                 else:
                     st.error("Nazwa kategorii jest wymagana!")
 
-    with col2:
-        st.header("📋 Lista kategorii")
-        try:
-            res_kat = supabase.table("kategorie").select("nazwa, opis").execute()
-            if res_kat.data:
-                st.table(res_kat.data)
-            else:
-                st.info("Brak zdefiniowanych kategorii.")
-        except Exception as e:
-            st.error(f"Błąd pobierania: {e}")
+    with tab_kat_usun:
+        st.header("🗑️ Usuń kategorię")
+        st.warning("Uwaga: Usunięcie kategorii, do której przypisane są produkty, może spowodować błędy w bazie danych (zależnie od ustawień kluczy obcych).")
+        
+        kategorie_opcje = get_categories()
+        if kategorie_opcje:
+            with st.form("delete_category_form"):
+                kat_do_usuniecia = st.selectbox("Wybierz kategorię do usunięcia", options=list(kategorie_opcje.keys()))
+                potwierdz_kat = st.checkbox("Potwierdzam chęć usunięcia tej kategorii")
+                btn_usun_kat = st.form_submit_button("USUŃ KATEGORIĘ", type="primary")
+                
+                if btn_usun_kat:
+                    if potwierdz_kat:
+                        try:
+                            kat_id = kategorie_opcje[kat_do_usuniecia]
+                            supabase.table("kategorie").delete().eq("id", kat_id).execute()
+                            st.success(f"Usunięto kategorię: {kat_do_usuniecia}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Nie można usunąć kategorii. Prawdopodobnie są do niej przypisane produkty. Błąd: {e}")
+                    else:
+                        st.warning("Zaznacz pole potwierdzenia.")
+        else:
+            st.info("Brak kategorii do usunięcia.")
 
 # --- SEKCJA: MAGAZYN ---
 elif page == "📦 Magazyn":
     st.title("📦 Zarządzanie Produktami")
 
-    # Zakładki dla Magazynu
-    tab_lista, tab_dodaj, tab_usun = st.tabs([
+    tab_prod_lista, tab_prod_dodaj, tab_prod_usun = st.tabs([
         "📋 Lista produktów", 
         "➕ Dodaj produkt", 
         "🗑️ Usuń produkt"
     ])
 
-    # Tabela z produktami
-    with tab_lista:
+    with tab_prod_lista:
         st.header("📊 Aktualny stan magazynowy")
         try:
-            # JOIN: Pobieramy produkty i nazwy ich kategorii
             res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategorie(nazwa)").execute()
             if res.data:
                 display_data = []
@@ -91,21 +117,19 @@ elif page == "📦 Magazyn":
                     })
                 st.dataframe(display_data, use_container_width=True)
                 
-                # Statystyki na dole
                 total_items = sum(item['liczba'] for item in res.data)
-                st.metric("Łączna liczba produktów (sztuki)", total_items)
+                st.metric("Łączna liczba produktów", total_items)
             else:
                 st.info("Magazyn jest obecnie pusty.")
         except Exception as e:
             st.error(f"Nie udało się pobrać danych: {e}")
 
-    # Formularz dodawania
-    with tab_dodaj:
+    with tab_prod_dodaj:
         st.header("🛒 Dodaj nowy produkt")
         kategorie_dict = get_categories()
 
         if not kategorie_dict:
-            st.warning("Najpierw przejdź do sekcji 'Kategorie' i dodaj przynajmniej jedną.")
+            st.warning("Najpierw dodaj kategorię.")
         else:
             with st.form("product_form", clear_on_submit=True):
                 prod_nazwa = st.text_input("Nazwa produktu")
@@ -132,29 +156,26 @@ elif page == "📦 Magazyn":
                     else:
                         st.error("Nazwa produktu jest wymagana!")
 
-    # Usuwanie produktów
-    with tab_usun:
+    with tab_prod_usun:
         st.header("🗑️ Usuń produkt")
         try:
             res_del = supabase.table("produkty").select("id, nazwa").execute()
             if res_del.data:
-                # Tworzymy opcje wyboru: "Nazwa (ID)"
-                opcje = {f"{i['nazwa']} (ID: {i['id']})": i['id'] for i in res_del.data}
+                opcje_prod = {f"{i['nazwa']} (ID: {i['id']})": i['id'] for i in res_del.data}
                 
-                with st.form("delete_form"):
-                    do_usuniecia = st.selectbox("Wybierz produkt do skasowania", options=list(opcje.keys()))
-                    potwierdz = st.checkbox("Potwierdzam, że chcę trwale usunąć ten produkt")
-                    przycisk_usun = st.form_submit_button("USUŃ PRODUKT", type="primary")
+                with st.form("delete_prod_form"):
+                    do_usuniecia = st.selectbox("Wybierz produkt", options=list(opcje_prod.keys()))
+                    potwierdz_prod = st.checkbox("Potwierdzam usunięcie produktu")
+                    btn_usun_prod = st.form_submit_button("USUŃ PRODUKT", type="primary")
                     
-                    if przycisk_usun:
-                        if potwierdz:
-                            target_id = opcje[do_usuniecia]
-                            supabase.table("produkty").delete().eq("id", target_id).execute()
-                            st.success(f"Usunięto: {do_usuniecia}")
+                    if btn_usun_prod:
+                        if potwierdz_prod:
+                            supabase.table("produkty").delete().eq("id", opcje_prod[do_usuniecia]).execute()
+                            st.success(f"Usunięto produkt.")
                             st.rerun()
                         else:
-                            st.warning("Zaznacz pole potwierdzenia przed kliknięciem przycisku.")
+                            st.warning("Zaznacz potwierdzenie.")
             else:
-                st.info("Brak produktów w bazie.")
+                st.info("Brak produktów.")
         except Exception as e:
-            st.error(f"Błąd usuwania: {e}")
+            st.error(f"Błąd: {e}")
